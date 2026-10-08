@@ -146,7 +146,7 @@ describe("review continuation deadline", () => {
   });
 });
 
-describe.each(["accepted", "rejected"] as const)("%s service continuation deadline", status => {
+describe.each([["accepted", false], ["accepted", true], ["rejected", false], ["rejected", true]] as const)("%s service continuation deadline (decision after run: %s)", (status, decisionAfterRun) => {
   it.each([true, false])("keeps the original deadline for a delayed dispatch (arrives: %s)", async arrives => {
     vi.useFakeTimers();
     try {
@@ -155,7 +155,7 @@ describe.each(["accepted", "rejected"] as const)("%s service continuation deadli
         id: "approval", issueId: "task", sourceRunId: "first", createdByAgentId: "agent", kind: "request_confirmation", status, continuationPolicy: "wake_assignee",
         resolvedAt: new Date(start - 1000).toISOString(), payload: { toolAction: { version: 1, actionRequestId: "action" } }, result: status === "accepted" ? { outcome: "accepted", toolAction: { status: "executed" } } : { outcome: "rejected" },
       }] }];
-      const runs = [{ id: "first", companyId: "company", nativeIssueId: "task", agentId: "agent", status: "succeeded", finishedAt: new Date(start).toISOString() }];
+      const runs = [{ id: "first", companyId: "company", nativeIssueId: "task", agentId: "agent", status: "succeeded", finishedAt: new Date(start - (decisionAfterRun ? 2000 : 0)).toISOString() }];
       const caught = pollUntil({ label: "service continuation", deadlineAt: start + 30_000, intervalMs: 1000,
         load: async () => { if (arrives && Date.now() >= start + 20_000) issues[0]!.status = "done"; return { issues, runs }; },
         accept: state => state.issues[0]!.status === "done",
@@ -173,7 +173,7 @@ describe.each(["accepted", "rejected"] as const)("%s service continuation deadli
       id: "approval", issueId: "task", sourceRunId: "first", createdByAgentId: "agent", kind: "request_confirmation", status, continuationPolicy: "wake_assignee",
       resolvedAt: "2026-10-07T05:37:19Z", payload: { toolAction: { version: 1, actionRequestId: "action" } }, result: status === "accepted" ? { outcome: "accepted", toolAction: { status: "executed" } } : { outcome: "rejected" },
     }] }];
-    const runs = [{ id: "first", companyId: "company", nativeIssueId: "task", agentId: "agent", status: "succeeded", finishedAt: "2026-10-07T05:37:28Z" }];
+    const runs = [{ id: "first", companyId: "company", nativeIssueId: "task", agentId: "agent", status: "succeeded", finishedAt: decisionAfterRun ? "2026-10-07T05:37:18Z" : "2026-10-07T05:37:28Z" }];
     expect(storyHasDurableServiceContinuation(issues, "task", "agent", runs)).toBe(true);
     expect(storyHasDurableServiceContinuation(issues, "task", "other", runs)).toBe(false);
     for (const mutate of [
@@ -189,6 +189,8 @@ describe.each(["accepted", "rejected"] as const)("%s service continuation deadli
       mutate(changed[0]!);
       expect(storyHasDurableServiceContinuation(changed, "task", "agent", runs)).toBe(false);
     }
+    expect(storyHasDurableServiceContinuation(issues, "task", "agent", [{ ...runs[0]!, nativeIssueId: "other-task" }])).toBe(false);
+    expect(storyHasDurableServiceContinuation(issues, "task", "agent", [{ ...runs[0]!, finishedAt: "invalid" }])).toBe(false);
     const continued = [...runs, { id: "next", companyId: "company", agentId: "agent", status: "succeeded", runnerProfileJson: { nativeExecutionInput: { interactionResponses: [{ interactionId: "approval" }] } } }];
     expect(storyHasDurableServiceContinuation(issues, "task", "agent", continued)).toBe(false);
     issues[0]!.interactions![0]!.result = { outcome: "accepted", toolAction: { status: "failed" } };

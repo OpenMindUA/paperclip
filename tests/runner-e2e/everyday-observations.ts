@@ -463,7 +463,7 @@ export function storyHasDurableServiceContinuation(issues: StoryIssue[], parentI
         !resolved ||
         action?.version !== 1 || typeof action.actionRequestId !== "string" || !action.actionRequestId.trim() ||
         source?.agentId !== agentId || source.companyId !== issue.companyId || source.nativeIssueId !== parentId || source.status !== "succeeded" ||
-        !(Date.parse(source.finishedAt ?? "") >= Date.parse(interaction.resolvedAt ?? ""))) return false;
+        (!Number.isFinite(Date.parse(source.finishedAt ?? "")) || !Number.isFinite(Date.parse(interaction.resolvedAt ?? "")))) return false;
     return !runs.some(run => {
       const input = run.runnerProfileJson?.nativeExecutionInput as
         { interactionResponses?: Array<{ interactionId?: string }> } | undefined;

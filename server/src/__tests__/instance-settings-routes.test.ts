@@ -29,8 +29,10 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
+const mockReadIdleSleepSafety = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../services/idle-sleep-safety.js", () => ({ readIdleSleepSafety: mockReadIdleSleepSafety }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => mockCompanyService,
     heartbeatService: () => mockHeartbeatService,
@@ -89,6 +91,7 @@ describe("instance settings routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockReadIdleSleepSafety.mockReset();
     // vi.clearAllMocks() clears recorded calls only; it does not remove a
     // mockImplementation a prior test installed. Reinstall the default here
     // so a stateful implementation from one test can never leak into the
@@ -960,6 +963,28 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual(idleStatus);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+    });
+
+    it("returns the opt-in instance-wide safety report to an instance admin", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      const report = { version: 1, backgroundWork: "unknown" };
+      mockReadIdleSleepSafety.mockResolvedValue(report);
+      const res = await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepSafety=1");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ...idleStatus, idleSleepSafety: report });
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function));
+      expect(mockReadIdleSleepSafety.mock.calls[0][1]()).toEqual(idleStatus);
+    });
+
+    it.each([
+      ["company member", nonAdminActor],
+      ["agent", { type: "agent", agentId: "agent-1", companyId: "company-1" }],
+      ["anonymous caller", { type: "none" }],
+    ])("does not expose the instance-wide work report to a %s", async (_name, actor) => {
+      const res = await request(createApp(actor)).get("/api/instance/task-drain?idleSleepSafety=1");
+      expect(res.status).toBe(403);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
     });
 
     it("writes an activity record for every company, then applies the same drain values, in one transaction", async () => {

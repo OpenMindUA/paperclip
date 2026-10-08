@@ -13,6 +13,7 @@ import {
   isCloudManagedInstance,
 } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -297,6 +298,14 @@ export function instanceSettingsRoutes(db: Db) {
 
   router.get("/instance/task-drain", async (req, res) => {
     assertBoardOrgAccess(req);
+    if (req.query.idleSleepSafety === "1") {
+      // The report covers every company in this process. Ordinary company
+      // members may read process counters, but not instance-wide work state.
+      assertCanManageInstanceSettings(req);
+      const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus());
+      res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
+      return;
+    }
     res.json(heartbeat.getTaskDrainStatus());
   });
 

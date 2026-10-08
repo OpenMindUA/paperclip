@@ -45,6 +45,17 @@ function remoteTarget(stdout = "codex-cli 0.156.0", overrides = {}) {
 }
 
 describe("remote model compatibility preflight", () => {
+  it.each(["discovery", "version"])("defers to launch verification when the %s probe rejects", async (phase) => {
+    const { target, execute } = remoteTarget();
+    if (phase === "version") {
+      execute.mockResolvedValueOnce({ exitCode: 0, signal: null, timedOut: false,
+        stderr: "", stdout: "/opt/paperclip-runner/bin/codex\n" });
+    }
+    execute.mockRejectedValueOnce(new Error("temporary sandbox command failure"));
+    await expect(readRemoteCodexModelCliVersion({ model: "gpt-6.1-sol", target })).resolves.toBeNull();
+    expect(execute).toHaveBeenCalledTimes(phase === "version" ? 2 : 1);
+  });
+
   it("checks the image CLI without invoking a provider turn or installing software", async () => {
     const { target, execute } = remoteTarget();
     const version = await readRemoteCodexModelCliVersion({ model: "gpt-6.1-sol", target });

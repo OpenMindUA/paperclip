@@ -75,15 +75,21 @@ export async function readRemoteCodexModelCliVersion(input: {
   // An explicit artifact or install pin takes precedence over the image CLI.
   if (target?.kind !== "remote" || !minimumCodexCliVersionForModel(input.model)
     || input.remoteCodexPath?.trim() || input.remoteCodexNpmSpec?.trim()) return null;
-  const runner = target.transport === "ssh"
-    ? createNativeSshCommandRunner({ spec: target.spec, defaultCwd: target.remoteCwd })
-    : target.runner;
-  if (!runner) return null;
-  const executable = await discoverRemoteExecutable(runner, target.remoteCwd, "codex");
-  if (!executable) return null;
-  const result = await runner.execute({ command: executable, args: ["--version"],
-    cwd: target.remoteCwd, bypassSession: true, timeoutMs: 30_000 });
-  if (result.exitCode !== 0 || result.timedOut) return null;
-  const version = parseCodexCliVersion(`${result.stdout}\n${result.stderr}`);
-  return version && isSupportedRemoteCodexVersion(version) ? version : null;
+  try {
+    const runner = target.transport === "ssh"
+      ? createNativeSshCommandRunner({ spec: target.spec, defaultCwd: target.remoteCwd })
+      : target.runner;
+    if (!runner) return null;
+    const executable = await discoverRemoteExecutable(runner, target.remoteCwd, "codex");
+    if (!executable) return null;
+    const result = await runner.execute({ command: executable, args: ["--version"],
+      cwd: target.remoteCwd, bypassSession: true, timeoutMs: 30_000 });
+    if (result.exitCode !== 0 || result.timedOut) return null;
+    const version = parseCodexCliVersion(`${result.stdout}\n${result.stderr}`);
+    return version && isSupportedRemoteCodexVersion(version) ? version : null;
+  } catch {
+    // Optional preparation probes must not bypass launch verification or its
+    // existing recovery policy when a remote command rejects or times out.
+    return null;
+  }
 }

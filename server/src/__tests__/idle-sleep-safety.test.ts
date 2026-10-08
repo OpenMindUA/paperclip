@@ -38,10 +38,16 @@ describe("idle sleep safety failure boundaries", () => {
     { activeRuns: 1 }, { pendingWakes: 1 },
   ])("rejects a report when the hold changes during the durable scan: %j", async (change) => {
     const getStatus = vi.fn().mockReturnValueOnce(held()).mockReturnValue({ ...held(), ...change });
-    const execute = vi.fn().mockResolvedValue([{ blocked: false }]);
+    const execute = vi.fn().mockResolvedValue([{ blocked: true }]);
     const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute }));
     expect(await readIdleSleepSafety({ transaction } as unknown as Db, getStatus, () => now)).toEqual(unknown);
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: "repeatable read", accessMode: "read only" });
+  });
+
+  it("reports persisted work when the admission hold remains unchanged", async () => {
+    const execute = vi.fn().mockResolvedValue([{ blocked: true }]);
+    const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute }));
+    expect(await readIdleSleepSafety({ transaction } as unknown as Db, held, () => now)).toEqual(present);
   });
 });
 
@@ -89,7 +95,7 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     expect(await read()).toEqual(present);
   });
 
-  it("blocks a future heartbeat timer but allows it when explicitly disabled", async () => {
+  it("reports an enabled heartbeat timer and returns unknown after it is disabled", async () => {
     const { agentId } = await seed();
     await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: true, intervalSec: 86_400 } } }).where(eq(agents.id, agentId));
     expect(await read()).toEqual(present);

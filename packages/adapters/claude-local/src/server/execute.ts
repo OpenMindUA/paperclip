@@ -90,6 +90,7 @@ import {
 } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
+import { readInstructionSiblingFiles, type InstructionSiblingFile } from "./instruction-siblings.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -124,6 +125,15 @@ interface ClaudeRuntimeConfig {
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
+}
+
+function buildInstructionsPathDirective(instructionsFilePath: string, instructionsFileDir: string): string {
+  return (
+    `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
+    `Resolve any relative file references from ${instructionsFileDir}. ` +
+    `This base directory is authoritative for sibling instruction files such as ` +
+    `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`
+  );
 }
 
 export function claudeSessionCwdMatchesExecutionTarget(input: {
@@ -496,15 +506,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // file that includes both the file content and the path directive, so we only
   // need --append-system-prompt-file (Claude CLI forbids using both flags together).
   let combinedInstructionsContents: string | null = null;
+  let instructionSiblingFiles: InstructionSiblingFile[] = [];
   if (instructionsFilePath) {
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
-      const pathDirective =
-        `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsFileDir}. ` +
-        `This base directory is authoritative for sibling instruction files such as ` +
-        `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`;
+      // On a remote target the server path is meaningless; the run prompt names the remote location instead.
+      const pathDirective = executionTargetIsRemote
+        ? ""
+        : buildInstructionsPathDirective(instructionsFilePath, instructionsFileDir);
       combinedInstructionsContents = instructionsContent + pathDirective;
+      if (executionTargetIsRemote) {
+        instructionSiblingFiles = await readInstructionSiblingFiles({
+          entryFilePath: instructionsFilePath,
+          maxDepth: asString(config.instructionsBundleMode, "") === "managed" ? 4 : 0,
+          onLog,
+        });
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -544,6 +561,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     skills: mountableSkillEntries,
     instructionsContents: combinedInstructionsContents,
+    siblingFiles: instructionSiblingFiles,
     onLog,
   });
   const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
@@ -673,6 +691,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
       : promptBundle.instructionsFilePath
     : undefined;
+  const remoteInstructionsDirective =
+    executionTargetIsRemote && effectiveInstructionsFilePath
+      ? `Agent instructions for this run were loaded from ${effectiveInstructionsFilePath}. ` +
+        `Resolve any relative file references from ${effectivePromptBundleAddDir}/. ` +
+        `This base directory is authoritative for sibling instruction files such as ` +
+        `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md.`
+      : "";
   const effectiveMcpConfigPath = executionTargetIsRemote
     ? path.posix.join(
         preparedExecutionTargetRuntime?.assetDirs["mcp-config"] ??
@@ -855,6 +880,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const prompt = joinPromptSections([
+    remoteInstructionsDirective,
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,

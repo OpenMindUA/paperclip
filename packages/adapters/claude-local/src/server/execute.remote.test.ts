@@ -231,24 +231,26 @@ describe("claude remote execution", () => {
     }));
   });
 
-  it("ships the sibling instruction files to the SSH target and points the run prompt at the remote copy", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-siblings-"));
+  async function runWithInstructions(input: {
+    runId: string;
+    files: Record<string, string>;
+    bundleMode?: "managed";
+    remote: boolean;
+  }) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), `paperclip-claude-${input.runId}-`));
     cleanupDirs.push(rootDir);
     vi.stubEnv("PAPERCLIP_HOME", path.join(rootDir, "home"));
     vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
     const workspaceDir = path.join(rootDir, "workspace");
     const instructionsDir = path.join(rootDir, "instructions");
-    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-siblings/workspace";
-    const remoteInstructionsDir = `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`;
     await mkdir(workspaceDir, { recursive: true });
-    await mkdir(instructionsDir, { recursive: true });
-    await writeFile(path.join(instructionsDir, "AGENTS.md"), "Read ./TOOLS.md first.\n", "utf8");
-    await writeFile(path.join(instructionsDir, "TOOLS.md"), "tools\n", "utf8");
-    await writeFile(path.join(instructionsDir, "HEARTBEAT.md"), "heartbeat\n", "utf8");
-    await writeFile(path.join(instructionsDir, "SOUL.md"), "soul\n", "utf8");
+    for (const [relativePath, contents] of Object.entries(input.files)) {
+      await mkdir(path.dirname(path.join(instructionsDir, relativePath)), { recursive: true });
+      await writeFile(path.join(instructionsDir, relativePath), contents, "utf8");
+    }
 
     await execute({
-      runId: "run-siblings",
+      runId: input.runId,
       agent: {
         id: "agent-1",
         companyId: "company-1",
@@ -261,93 +263,117 @@ describe("claude remote execution", () => {
         engine: "cli",
         command: "claude",
         instructionsFilePath: path.join(instructionsDir, "AGENTS.md"),
-        instructionsBundleMode: "managed",
+        ...(input.bundleMode ? { instructionsBundleMode: input.bundleMode } : {}),
       },
       context: {
         paperclipWorkspace: { cwd: workspaceDir, source: "project_primary", strategy: "git_worktree" },
       },
-      executionTransport: {
-        remoteExecution: {
-          host: "127.0.0.1",
-          port: 2222,
-          username: "fixture",
-          remoteWorkspacePath: "/remote/workspace",
-          remoteCwd: "/remote/workspace",
-          privateKey: "PRIVATE KEY",
-          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
-          strictHostKeyChecking: true,
-        },
-      },
+      ...(input.remote
+        ? {
+            executionTransport: {
+              remoteExecution: {
+                host: "127.0.0.1",
+                port: 2222,
+                username: "fixture",
+                remoteWorkspacePath: "/remote/workspace",
+                remoteCwd: "/remote/workspace",
+                privateKey: "PRIVATE KEY",
+                knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+                strictHostKeyChecking: true,
+              },
+            },
+          }
+        : {}),
       onLog: async () => {},
     });
 
+    const runCall = runChildProcess.mock.calls
+      .map((call) => call as unknown as [string, string, string[], { stdin?: string }])
+      .find((call) => Boolean(call[3]?.stdin));
+    const args = runCall?.[2] ?? [];
+    const bundleFile = args.includes("--append-system-prompt-file")
+      ? args[args.indexOf("--append-system-prompt-file") + 1]
+      : undefined;
+    const remoteBundleDir = `/remote/workspace/.paperclip-runtime/runs/${input.runId}/workspace/.paperclip-runtime/claude/skills`;
     const skillsSync = syncDirectoryToSsh.mock.calls
       .map((call) => (call as unknown as [{ localDir: string; remoteDir: string }])[0])
-      .find((input) => input.remoteDir === remoteInstructionsDir);
-    expect(skillsSync).toBeDefined();
-    const shippedFiles = (await readdir(skillsSync!.localDir)).filter((name) => name.endsWith(".md")).sort();
-    expect(shippedFiles).toEqual(["HEARTBEAT.md", "SOUL.md", "TOOLS.md", "agent-instructions.md"]);
-    expect(await readFile(path.join(skillsSync!.localDir, "TOOLS.md"), "utf8")).toBe("tools\n");
+      .find((sync) => sync.remoteDir === remoteBundleDir);
+    const localBundleDir = input.remote ? skillsSync?.localDir : bundleFile ? path.dirname(bundleFile) : undefined;
+    const shipped = localBundleDir
+      ? (await readdir(localBundleDir, { recursive: true })).map(String).filter((name) => name.endsWith(".md") && !name.startsWith(".claude")).sort()
+      : [];
+    return { instructionsDir, remoteBundleDir, prompt: runCall?.[3].stdin ?? "", shipped, localBundleDir };
+  }
 
-    const call = runChildProcess.mock.calls[0] as unknown as
-      | [string, string, string[], { stdin?: string }]
-      | undefined;
-    const prompt = call?.[3].stdin ?? "";
-    expect(prompt).toContain(`loaded from ${remoteInstructionsDir}/agent-instructions.md`);
-    expect(prompt).toContain(`Resolve any relative file references from ${remoteInstructionsDir}/.`);
-    expect(prompt).not.toContain(instructionsDir);
+  it("ships the sibling instruction files of a managed bundle, subdirectories included, and points the run prompt at the remote copy", async () => {
+    const run = await runWithInstructions({
+      runId: "run-siblings",
+      remote: true,
+      bundleMode: "managed",
+      files: {
+        "AGENTS.md": "Read ./TOOLS.md first.\n",
+        "TOOLS.md": "tools\n",
+        "HEARTBEAT.md": "heartbeat\n",
+        "SOUL.md": "soul\n",
+        "memory/notes.md": "notes\n",
+      },
+    });
+
+    expect(run.shipped).toEqual(["HEARTBEAT.md", "SOUL.md", "TOOLS.md", "agent-instructions.md", "memory/notes.md"]);
+    expect(await readFile(path.join(run.localBundleDir!, "TOOLS.md"), "utf8")).toBe("tools\n");
+    expect(run.prompt).toContain(`loaded from ${run.remoteBundleDir}/agent-instructions.md`);
+    expect(run.prompt).toContain(`Resolve any relative file references from ${run.remoteBundleDir}/.`);
+    expect(run.prompt).not.toContain(run.instructionsDir);
   });
 
-  it("does not send sibling instruction files to the SSH target when the entry file is the only one", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-no-siblings-"));
-    cleanupDirs.push(rootDir);
-    vi.stubEnv("PAPERCLIP_HOME", path.join(rootDir, "home"));
-    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
-    const workspaceDir = path.join(rootDir, "workspace");
-    const instructionsDir = path.join(rootDir, "instructions");
-    await mkdir(workspaceDir, { recursive: true });
-    await mkdir(instructionsDir, { recursive: true });
-    await writeFile(path.join(instructionsDir, "AGENTS.md"), "Only the entry file.\n", "utf8");
-
-    await execute({
-      runId: "run-no-siblings",
-      agent: {
-        id: "agent-1",
-        companyId: "company-1",
-        name: "Claude Coder",
-        adapterType: "claude_local",
-        adapterConfig: {},
-      },
-      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
-      config: {
-        engine: "cli",
-        command: "claude",
-        instructionsFilePath: path.join(instructionsDir, "AGENTS.md"),
-      },
-      context: {
-        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary", strategy: "git_worktree" },
-      },
-      executionTransport: {
-        remoteExecution: {
-          host: "127.0.0.1",
-          port: 2222,
-          username: "fixture",
-          remoteWorkspacePath: "/remote/workspace",
-          remoteCwd: "/remote/workspace",
-          privateKey: "PRIVATE KEY",
-          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
-          strictHostKeyChecking: true,
-        },
-      },
-      onLog: async () => {},
+  it("ships only top-level sibling files of an external bundle", async () => {
+    const run = await runWithInstructions({
+      runId: "run-external",
+      remote: true,
+      files: { "AGENTS.md": "entry\n", "TOOLS.md": "tools\n", "memory/notes.md": "notes\n" },
     });
 
-    const skillsSync = syncDirectoryToSsh.mock.calls
-      .map((call) => (call as unknown as [{ localDir: string; remoteDir: string }])[0])
-      .find((input) => input.remoteDir.endsWith("/.paperclip-runtime/claude/skills"));
-    expect(skillsSync).toBeDefined();
-    const shippedFiles = (await readdir(skillsSync!.localDir)).filter((name) => name.endsWith(".md"));
-    expect(shippedFiles).toEqual(["agent-instructions.md"]);
+    expect(run.shipped).toEqual(["TOOLS.md", "agent-instructions.md"]);
+  });
+
+  it("sends only the entry file when it has no siblings and still points the run prompt at the remote copy", async () => {
+    const run = await runWithInstructions({
+      runId: "run-no-siblings",
+      remote: true,
+      files: { "AGENTS.md": "Only the entry file.\n" },
+    });
+
+    expect(run.shipped).toEqual(["agent-instructions.md"]);
+    expect(run.prompt).toContain(`Resolve any relative file references from ${run.remoteBundleDir}/.`);
+    expect(run.prompt).not.toContain(run.instructionsDir);
+  });
+
+  it("sends no siblings and no instructions directive when the entry file cannot be read", async () => {
+    const run = await runWithInstructions({
+      runId: "run-no-entry",
+      remote: true,
+      bundleMode: "managed",
+      files: { "TOOLS.md": "tools\n" },
+    });
+
+    expect(run.localBundleDir).toBeDefined();
+    expect(run.prompt).not.toBe("");
+    expect(run.shipped).not.toContain("TOOLS.md");
+    expect(run.prompt).not.toContain("Resolve any relative file references from");
+    expect(run.prompt).not.toContain(run.instructionsDir);
+  });
+
+  it("leaves a local run unchanged: no sibling copies in the bundle, directive on the server path", async () => {
+    const run = await runWithInstructions({
+      runId: "run-local",
+      remote: false,
+      bundleMode: "managed",
+      files: { "AGENTS.md": "entry\n", "TOOLS.md": "tools\n" },
+    });
+
+    expect(syncDirectoryToSsh).not.toHaveBeenCalled();
+    expect(run.shipped).toEqual(["agent-instructions.md"]);
+    expect(run.prompt).toContain(`Resolve any relative file references from ${run.instructionsDir}/.`);
   });
 
   it("does not resume saved Claude sessions for remote SSH execution without a matching remote identity", async () => {

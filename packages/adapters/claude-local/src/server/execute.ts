@@ -94,7 +94,7 @@ import {
 } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
-import { readInstructionSiblingFiles, type InstructionSiblingFile } from "./instruction-siblings.js";
+import { readInstructionSiblingFiles } from "./instruction-siblings.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -514,21 +514,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Resumed sessions retain that prompt, so refresh the location on every turn.
   let combinedInstructionsContents: string | null = null;
   let instructionsPathDirective = "";
-  let instructionSiblingFiles: InstructionSiblingFile[] = [];
   if (instructionsFilePath) {
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
       instructionsPathDirective = buildInstructionsPathDirective(instructionsFilePath, instructionsFileDir);
       combinedInstructionsContents = instructionsContent +
         "\nUse the agent instruction file location supplied in the current run prompt to resolve relative file references.";
-      // A remote target cannot read the server's instructions directory, so send the sibling files along.
-      if (executionTargetIsRemote) {
-        instructionSiblingFiles = await readInstructionSiblingFiles({
-          entryFilePath: instructionsFilePath,
-          maxDepth: asString(config.instructionsBundleMode, "") === "managed" ? 4 : 0,
-          onLog,
-        });
-      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -537,6 +528,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  // A remote target cannot read the server's instructions directory, so send the sibling files along.
+  const instructionSiblingFiles = executionTargetIsRemote && instructionsFilePath && combinedInstructionsContents
+    ? await readInstructionSiblingFiles({
+        entryFilePath: instructionsFilePath,
+        maxDepth: asString(config.instructionsBundleMode, "") === "managed" ? 4 : 0,
+        onLog,
+      })
+    : [];
   // Tell the model what the company library actually holds. Without this, an
   // installed-but-not-enabled skill is indistinguishable from a nonexistent
   // one from inside the sandbox, and agents tell users freshly installed

@@ -132,3 +132,16 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
   }
   return null;
 }
+
+/** A handoff wake races the cancelled run's lease cleanup; wait for the release instead of letting admission skip the wake. */
+export async function waitForOwnershipRelease(
+  db: Db, companyId: string, issueId: string,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<boolean> {
+  const deadline = Date.now() + (opts.timeoutMs ?? 120_000);
+  for (;;) {
+    if (!(await getConversationOwnershipBlocker(db, companyId, issueId))) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, opts.pollMs ?? 1_000));
+  }
+}

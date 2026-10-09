@@ -2,6 +2,7 @@ import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractio
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { waitForOwnershipRelease } from "../services/conversation-continuation.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
@@ -14896,6 +14897,17 @@ export function issueRoutes(
                 childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
               },
             });
+          }
+        }
+
+        if (interruptedRunId && wakeups.size > 0) {
+          const released = await waitForOwnershipRelease(db, issue.companyId, issue.id)
+            .catch(() => false);
+          if (!released) {
+            logger.warn(
+              { issueId: issue.id, interruptedRunId },
+              "interrupted run still holds its execution lease; waking anyway",
+            );
           }
         }
 

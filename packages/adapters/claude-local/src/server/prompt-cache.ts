@@ -9,6 +9,8 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 
+import type { InstructionSiblingFile } from "./instruction-siblings.js";
+
 type SkillEntry = PaperclipSkillEntry;
 
 export interface ClaudePromptBundle {
@@ -88,6 +90,7 @@ async function hashPathContents(
 async function buildClaudePromptBundleKey(input: {
   skills: SkillEntry[];
   instructionsContents: string | null;
+  siblingFiles: InstructionSiblingFile[];
 }): Promise<string> {
   const hash = createHash("sha256");
   hash.update("paperclip-claude-prompt-bundle:v1\n");
@@ -97,6 +100,12 @@ async function buildClaudePromptBundleKey(input: {
     hash.update("\n");
   } else {
     hash.update("instructions:none\n");
+  }
+  // Absent for local runs, so their bundle keys, and the sessions saved under them, do not change.
+  for (const sibling of input.siblingFiles) {
+    hash.update(`instructions-sibling:${sibling.relativePath}\n`);
+    hash.update(sibling.contents);
+    hash.update("\n");
   }
 
   const sortedSkills = [...input.skills].sort((left, right) => left.runtimeName.localeCompare(right.runtimeName));
@@ -135,12 +144,16 @@ export async function prepareClaudePromptBundle(input: {
   companyId: string;
   skills: SkillEntry[];
   instructionsContents: string | null;
+  /** Files that sit next to the entry instructions file and must travel with it to a remote target. */
+  siblingFiles?: InstructionSiblingFile[];
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<ClaudePromptBundle> {
   const { companyId, skills, instructionsContents, onLog } = input;
+  const siblingFiles = instructionsContents ? input.siblingFiles ?? [] : [];
   const bundleKey = await buildClaudePromptBundleKey({
     skills,
     instructionsContents,
+    siblingFiles,
   });
   const rootDir = path.join(resolveManagedClaudePromptCacheRoot(process.env, companyId), bundleKey);
   const skillsHome = path.join(rootDir, ".claude", "skills");
@@ -163,6 +176,11 @@ export async function prepareClaudePromptBundle(input: {
     : null;
   if (instructionsFilePath && instructionsContents) {
     await ensureReadableFile(instructionsFilePath, instructionsContents);
+    for (const sibling of siblingFiles) {
+      const siblingPath = path.resolve(rootDir, sibling.relativePath);
+      if (!siblingPath.startsWith(`${path.resolve(rootDir)}${path.sep}`)) continue;
+      await ensureReadableFile(siblingPath, sibling.contents);
+    }
   }
 
   return {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -229,6 +229,125 @@ describe("claude remote execution", () => {
       localDir: workspaceDir,
       remoteDir: managedRemoteWorkspace,
     }));
+  });
+
+  it("ships the sibling instruction files to the SSH target and points the run prompt at the remote copy", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-siblings-"));
+    cleanupDirs.push(rootDir);
+    vi.stubEnv("PAPERCLIP_HOME", path.join(rootDir, "home"));
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    const workspaceDir = path.join(rootDir, "workspace");
+    const instructionsDir = path.join(rootDir, "instructions");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-siblings/workspace";
+    const remoteInstructionsDir = `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`;
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(instructionsDir, { recursive: true });
+    await writeFile(path.join(instructionsDir, "AGENTS.md"), "Read ./TOOLS.md first.\n", "utf8");
+    await writeFile(path.join(instructionsDir, "TOOLS.md"), "tools\n", "utf8");
+    await writeFile(path.join(instructionsDir, "HEARTBEAT.md"), "heartbeat\n", "utf8");
+    await writeFile(path.join(instructionsDir, "SOUL.md"), "soul\n", "utf8");
+
+    await execute({
+      runId: "run-siblings",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        engine: "cli",
+        command: "claude",
+        instructionsFilePath: path.join(instructionsDir, "AGENTS.md"),
+        instructionsBundleMode: "managed",
+      },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary", strategy: "git_worktree" },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const skillsSync = syncDirectoryToSsh.mock.calls
+      .map((call) => (call as unknown as [{ localDir: string; remoteDir: string }])[0])
+      .find((input) => input.remoteDir === remoteInstructionsDir);
+    expect(skillsSync).toBeDefined();
+    const shippedFiles = (await readdir(skillsSync!.localDir)).filter((name) => name.endsWith(".md")).sort();
+    expect(shippedFiles).toEqual(["HEARTBEAT.md", "SOUL.md", "TOOLS.md", "agent-instructions.md"]);
+    expect(await readFile(path.join(skillsSync!.localDir, "TOOLS.md"), "utf8")).toBe("tools\n");
+
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { stdin?: string }]
+      | undefined;
+    const prompt = call?.[3].stdin ?? "";
+    expect(prompt).toContain(`loaded from ${remoteInstructionsDir}/agent-instructions.md`);
+    expect(prompt).toContain(`Resolve any relative file references from ${remoteInstructionsDir}/.`);
+    expect(prompt).not.toContain(instructionsDir);
+  });
+
+  it("does not send sibling instruction files to the SSH target when the entry file is the only one", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-no-siblings-"));
+    cleanupDirs.push(rootDir);
+    vi.stubEnv("PAPERCLIP_HOME", path.join(rootDir, "home"));
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    const workspaceDir = path.join(rootDir, "workspace");
+    const instructionsDir = path.join(rootDir, "instructions");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(instructionsDir, { recursive: true });
+    await writeFile(path.join(instructionsDir, "AGENTS.md"), "Only the entry file.\n", "utf8");
+
+    await execute({
+      runId: "run-no-siblings",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        engine: "cli",
+        command: "claude",
+        instructionsFilePath: path.join(instructionsDir, "AGENTS.md"),
+      },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary", strategy: "git_worktree" },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const skillsSync = syncDirectoryToSsh.mock.calls
+      .map((call) => (call as unknown as [{ localDir: string; remoteDir: string }])[0])
+      .find((input) => input.remoteDir.endsWith("/.paperclip-runtime/claude/skills"));
+    expect(skillsSync).toBeDefined();
+    const shippedFiles = (await readdir(skillsSync!.localDir)).filter((name) => name.endsWith(".md"));
+    expect(shippedFiles).toEqual(["agent-instructions.md"]);
   });
 
   it("does not resume saved Claude sessions for remote SSH execution without a matching remote identity", async () => {

@@ -9,7 +9,7 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 
-import type { InstructionSiblingFile } from "./instruction-siblings.js";
+import { BUNDLE_ENTRY_FILE_NAME, type InstructionSiblingFile } from "./instruction-siblings.js";
 
 type SkillEntry = PaperclipSkillEntry;
 
@@ -172,14 +172,23 @@ export async function prepareClaudePromptBundle(input: {
   }
 
   const instructionsFilePath = instructionsContents
-    ? path.join(rootDir, "agent-instructions.md")
+    ? path.join(rootDir, BUNDLE_ENTRY_FILE_NAME)
     : null;
   if (instructionsFilePath && instructionsContents) {
     await ensureReadableFile(instructionsFilePath, instructionsContents);
+    const warnSkipped = (relativePath: string, reason: string) =>
+      onLog("stderr", `[paperclip] Warning: instruction file "${relativePath}" was not added to the prompt bundle: ${reason}\n`);
     for (const sibling of siblingFiles) {
       const siblingPath = path.resolve(rootDir, sibling.relativePath);
-      if (!siblingPath.startsWith(`${path.resolve(rootDir)}${path.sep}`)) continue;
-      await ensureReadableFile(siblingPath, sibling.contents);
+      if (!siblingPath.startsWith(`${path.resolve(rootDir)}${path.sep}`)) {
+        await warnSkipped(sibling.relativePath, "the path leaves the prompt bundle directory");
+        continue;
+      }
+      try {
+        await ensureReadableFile(siblingPath, sibling.contents);
+      } catch (err) {
+        await warnSkipped(sibling.relativePath, err instanceof Error ? err.message : String(err));
+      }
     }
   }
 

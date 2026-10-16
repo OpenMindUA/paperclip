@@ -447,6 +447,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
+  const strictMcpConfig = asBoolean(config.strictMcpConfig, true);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const configEnv = parseObject(config.env);
@@ -896,7 +897,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     if (runtimeMcpServers.length > 0) {
-      args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
+      args.push("--mcp-config", effectiveMcpConfigPath);
+      if (strictMcpConfig) args.push("--strict-mcp-config");
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
@@ -969,7 +971,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (runtimeMcpServers.length > 0) {
       commandNotes.push(
-        `Using ${runtimeMcpServers.length} Paperclip-managed MCP server(s) from strict config ${effectiveMcpConfigPath}.`,
+        `Using ${runtimeMcpServers.length} Paperclip-managed MCP server(s) from ${strictMcpConfig ? "strict " : ""}config ${effectiveMcpConfigPath}.`,
       );
     }
     if (onMeta) {

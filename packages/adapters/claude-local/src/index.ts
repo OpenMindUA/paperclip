@@ -66,6 +66,7 @@ Core fields:
 - model (string, optional): Claude model id. Missing or blank defaults to ${DEFAULT_CLAUDE_LOCAL_MODEL} in both CLI and ACP, including existing agents. Explicit model IDs and ANTHROPIC_MODEL overrides are preserved. Bedrock/Vertex without an explicit model retain their provider default.
 - effort (string, optional): model-specific reasoning effort passed via --effort (low|medium|high; current Opus, Sonnet 5/5.5, and Fable models also support xhigh|max)
 - chrome (boolean, optional): pass --chrome when running Claude
+- strictMcpConfig (boolean, optional, default true): pass --strict-mcp-config together with the Paperclip-managed --mcp-config, so Claude sees only those MCP servers. Set false to also load MCP servers registered in Claude Code itself and claude.ai connectors; --mcp-config is still passed.
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local and remote targets receive --dangerously-skip-permissions for all built-in and connected tools. Managed sandbox targets also identify themselves to Claude so root container launches support bypass. Non-sandbox root processes must run Claude as a non-root user; Paperclip does not silently downgrade the requested mode.

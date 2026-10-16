@@ -437,6 +437,58 @@ describe("claude execute", () => {
     }
   });
 
+  it("passes --strict-mcp-config by default and drops it when strictMcpConfig is false", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-strict-mcp-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      const servers: AdapterRuntimeMcpServer[] = [{
+        name: "alpha",
+        url: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
+        token: "alpha-token",
+        connectionId: "connection-alpha",
+      }];
+      const run = async (runId: string, extra: Record<string, unknown>) => {
+        await execute({
+          runId,
+          agent: { id: "agent-strict", companyId: "co-1", name: "agent-strict", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+          runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+          config: {
+            engine: "cli",
+            command: commandPath,
+            cwd: workspace,
+            env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+            promptTemplate: "Do work.",
+            ...extra,
+          },
+          runtimeMcp: { getServers: () => servers },
+          context: {},
+          authToken: "tok",
+          onLog: async () => {},
+        });
+        return JSON.parse(await fs.readFile(capturePath, "utf8"));
+      };
+
+      const unset = await run("run-strict-unset", {});
+      const on = await run("run-strict-on", { strictMcpConfig: true });
+      const off = await run("run-strict-off", {
+        strictMcpConfig: false,
+        extraArgs: ["--disallowedTools", "mcp__paperclip__*"],
+      });
+
+      for (const captured of [unset, on]) {
+        expect(captured.argv).toContain("--mcp-config");
+        expect(captured.argv).toContain("--strict-mcp-config");
+      }
+      expect(off.argv).toContain("--mcp-config");
+      expect(off.argv).not.toContain("--strict-mcp-config");
+      expect(off.argv).toEqual(expect.arrayContaining(["--disallowedTools", "mcp__paperclip__*"]));
+      expect(JSON.parse(off.mcpConfigContents).mcpServers).toHaveProperty("alpha");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a strict per-agent MCP config only when managed servers are present", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-mcp-config-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);

@@ -319,6 +319,45 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
   });
 
+  it("accepts an old expired lease of a cancelled SSH run without a receipt, but not a fresh one", async () => {
+    const agent = await hire();
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000);
+    const remoteRun = async (ageHours: number, cancellation: string | null, stage = "settled") => {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
+        status: "cancelled", invocationSource: "on_demand", runtimeMode: "legacy",
+        executionStage: stage, startedAt: hoursAgo(ageHours + 1), finishedAt: hoursAgo(ageHours),
+        resultJson: cancellation ? { executionCancellation: { state: cancellation } } : null }).returning();
+      const [lease] = await db.insert(environmentLeases).values({ companyId, heartbeatRunId: run.id,
+        provider: "ssh", providerLeaseId: `ssh-${run.id}`, status: "expired", cleanupStatus: null,
+        releasedAt: hoursAgo(ageHours) }).returning();
+      return { run, lease };
+    };
+    const fresh = await remoteRun(1, "acknowledged");
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.delete(environmentLeases).where(eq(environmentLeases.id, fresh.lease.id));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, fresh.run.id));
+    const unacknowledged = await remoteRun(48, null);
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.delete(environmentLeases).where(eq(environmentLeases.id, unacknowledged.lease.id));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, unacknowledged.run.id));
+    await remoteRun(48, "acknowledged", "dispatching");
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+  });
+
+  it("accepts an old cancelled legacy run without process or lease, but not a fresh one", async () => {
+    const agent = await hire();
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000);
+    const legacyRun = (ageHours: number) => db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "legacy", executionStage: null,
+      startedAt: hoursAgo(ageHours + 1), finishedAt: hoursAgo(ageHours),
+      resultJson: { stopReason: "timeout" } }).returning();
+    const [fresh] = await legacyRun(1);
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, fresh.id));
+    await legacyRun(48);
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+  });
+
   it("does not prepare a proposed hire until approval", async () => {
     const observed: string[] = [];
     const work = worker(async agent => { observed.push(agent.lifecycleState); return "complete"; });

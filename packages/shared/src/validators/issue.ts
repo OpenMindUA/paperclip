@@ -909,6 +909,14 @@ export const updateIssueSchema = objectWithoutDefaults(
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
+    /**
+     * `body` is the comment field of POST /issues/:id/comments. On an update it
+     * used to be stripped silently: the status and assignee changed, the text
+     * was lost, and the caller got 200. Reject it so the caller sees the error.
+     */
+    body: z
+      .never({ message: "Use `comment` for comment text on an issue update; `body` belongs to POST /issues/:id/comments" })
+      .optional(),
     commentClientRequestId: z.string().uuid().optional(),
     /** Only valid with a comment; the route binds these in the update transaction. */
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),

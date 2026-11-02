@@ -16,6 +16,14 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("rejects comment text sent as `body` on an issue update instead of dropping it", () => {
+    const result = updateIssueSchema.safeParse({ status: "todo", body: "analysis" });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(["body"]);
+    expect(result.error?.issues[0]?.message).toContain("`comment`");
+    expect(updateIssueSchema.parse({ status: "todo", comment: "analysis" }).comment).toBe("analysis");
+  });
+
   it("preserves the exact expected execution policy snapshot without defaults", () => {
     const snapshot = { mode: "normal", stages: [], monitor: { nextCheckAt: "2026-10-10T12:00:00Z" } };
     expect(updateIssueSchema.parse({ expectedExecutionPolicy: snapshot }).expectedExecutionPolicy).toEqual(snapshot);

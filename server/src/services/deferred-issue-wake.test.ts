@@ -64,4 +64,11 @@ const support = await getEmbeddedPostgresTestSupport();
     await park(f, f.outgoingId, f.issueId);
     expect((await findDeferredIssueWake(db, f.companyId, f.issueId))?.id).toBe(older.id);
   });
+
+  it("reads the preferred agent's wakes before older ones", async () => {
+    const f = await seed();
+    await park(f, f.ownerId, f.issueId, new Date(Date.now() - 5000));
+    const own = await park(f, f.outgoingId, f.issueId);
+    expect((await findDeferredIssueWake(db, f.companyId, f.issueId, f.outgoingId))?.id).toBe(own.id);
+  });
 });

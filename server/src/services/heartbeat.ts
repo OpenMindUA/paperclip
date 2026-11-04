@@ -4134,7 +4134,7 @@ export function heartbeatService(
         });
       }
       if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
-        const pending = await findDeferredIssueWake(db, run.companyId, String(latestRun.contextSnapshot?.issueId));
+        const pending = await findDeferredIssueWake(db, run.companyId, String(latestRun.contextSnapshot?.issueId), run.agentId);
         if (pending) await (pending.payload?.queuedCommentInterrupt
           ? resumeQueuedCommentInterrupt(run.companyId, pending.id)
           : releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true })).catch(err => {
